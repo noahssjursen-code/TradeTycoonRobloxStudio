@@ -3,6 +3,128 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local BuildingManager = require(ReplicatedStorage.Shared.BuildingManager)
+local ProductionManager = require(ReplicatedStorage.Shared.ProductionManager)
+
+-- Define BuildingProduction functions inline to avoid require issues
+local BuildingProduction = {}
+BuildingProduction.activeProductionTasks = {} -- Track active production loops to prevent duplicates
+
+function BuildingProduction.startProduction(cellId: number, buildingData: any)
+	-- Check if already running
+	if BuildingProduction.activeProductionTasks[cellId] then
+		print("Production already running for cell", cellId)
+		return
+	end
+	
+	local building = BuildingManager.getBuilding(buildingData.buildingId)
+	if not building or not building.produces then return end
+	
+	local cycleTime = building.cycleTime or 10 -- Default 10 seconds
+	
+	-- Start first production cycle immediately with visual feedback
+	local function runProductionCycle()
+		-- Show and animate progress bar
+		BuildingProduction.showProductionProgress(cellId, cycleTime)
+		
+		-- Produce one unit at a time
+		for resourceId, _ in pairs(building.produces) do
+			ProductionManager.receiveProduction(resourceId, 1)
+		end
+	end
+	
+	-- Run first cycle immediately
+	runProductionCycle()
+	
+	-- Then run continuously
+	local task = task.spawn(function()
+		while true do
+			task.wait(cycleTime)
+			runProductionCycle()
+		end
+	end)
+	
+	-- Track this task
+	BuildingProduction.activeProductionTasks[cellId] = task
+	print("Started production for building:", building.name, "on cell", cellId, "cycle:", (building.cycleTime or 10) .. "s")
+end
+
+function BuildingProduction.showProductionProgress(cellId: number, cycleTime: number)
+	-- Find cell directly from PlayerGui (don't rely on GameUI.centerPanel reference)
+	local gameGui = Players.LocalPlayer.PlayerGui:FindFirstChild("GameUI")
+	if not gameGui then 
+		print("No GameUI found")
+		return 
+	end
+	
+	local frame = gameGui:FindFirstChild("Frame")
+	if not frame then 
+		print("No Frame found")
+		return 
+	end
+	
+	local contentArea = frame:FindFirstChild("ContentArea")
+	if not contentArea then 
+		print("No ContentArea found")
+		return 
+	end
+	
+	local centerPanel = contentArea:FindFirstChild("CenterPanel")
+	if not centerPanel then
+		print("Could not find CenterPanel for cell", cellId)
+		return
+	end
+	
+	local cell = centerPanel:FindFirstChild("Cell_" .. cellId)
+	if not cell then 
+		print("Could not find cell", cellId)
+		return
+	end
+	
+	-- Remove old progress bar
+	local oldBar = cell:FindFirstChild("ProductionProgress")
+	if oldBar then
+		oldBar:Destroy()
+	end
+	
+	-- Create progress bar
+	local progressBar = Instance.new("Frame")
+	progressBar.Name = "ProductionProgress"
+	progressBar.Size = UDim2.new(0, 0, 0, 4)
+	progressBar.Position = UDim2.new(0, 0, 1, 0)
+	progressBar.AnchorPoint = Vector2.new(0, 1)
+	progressBar.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+	progressBar.BorderSizePixel = 0
+	progressBar.Parent = cell
+	
+	-- Animate progress bar
+	task.spawn(function()
+		local elapsed = 0
+		while elapsed < cycleTime do
+			task.wait(0.1)
+			elapsed = elapsed + 0.1
+			progressBar.Size = UDim2.new(elapsed / cycleTime, 0, 0, 4)
+		end
+		progressBar:Destroy()
+	end)
+end
+
+function BuildingProduction.startLoadedBuildings(saveData: any)
+	if not saveData or not saveData.GridCells then return end
+	
+	-- Clear any existing production tasks
+	for cellId, task in pairs(BuildingProduction.activeProductionTasks) do
+		task.cancel(task)
+	end
+	BuildingProduction.activeProductionTasks = {}
+	
+	-- Start production for all buildings
+	for cellId, buildingData in pairs(saveData.GridCells) do
+		if buildingData.buildingId then
+			local numericCellId = tonumber(cellId) or cellId
+			BuildingProduction.startProduction(numericCellId, buildingData)
+		end
+	end
+end
 
 local GameUI = {}
 
@@ -65,6 +187,7 @@ function GameUI.create()
 	
 	-- Main content area with 3 panels
 	local contentArea = Instance.new("Frame")
+	contentArea.Name = "ContentArea"
 	contentArea.Size = UDim2.new(1, -40, 1, -90)
 	contentArea.Position = UDim2.new(0, 20, 0, 90)
 	contentArea.BackgroundTransparency = 1
@@ -283,8 +406,9 @@ function GameUI.create()
 	centerPanel.BorderColor3 = Color3.fromRGB(60, 60, 70)
 	centerPanel.Parent = contentArea
 	
-	-- Store reference for building placement
+	-- Store reference for building placement and production
 	GameUI.centerPanel = centerPanel
+	print("Stored GameUI.centerPanel reference")
 	
 	-- Grid layout
 	local gridSize = 10
@@ -303,13 +427,13 @@ function GameUI.create()
 	local cellId = 0
 	for row = 0, gridSize - 1 do
 		for col = 0, gridSize - 1 do
-			local cell = Instance.new("TextButton")
-			cell.Name = "Cell_" .. cellId
-			cell.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
-			cell.BorderSizePixel = 1
-			cell.BorderColor3 = Color3.fromRGB(70, 70, 80)
-			cell.Text = ""
-			cell.Parent = centerPanel
+		local cell = Instance.new("TextButton")
+		cell.Name = "Cell_" .. cellId
+		cell.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+		cell.BorderSizePixel = 2
+		cell.BorderColor3 = Color3.fromRGB(30, 30, 35)
+		cell.Text = ""
+		cell.Parent = centerPanel
 			
 			-- Assign unique ID
 			cell:SetAttribute("CellID", cellId)
@@ -319,14 +443,7 @@ function GameUI.create()
 			-- Track cell
 			cell.Name = "Cell_" .. cellId
 			
-			-- Hover effect
-			cell.MouseEnter:Connect(function()
-				cell.BackgroundColor3 = Color3.fromRGB(70, 70, 80)
-			end)
-			
-			cell.MouseLeave:Connect(function()
-				cell.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
-			end)
+			-- No hover effect - visual feedback only from building color
 			
 			-- Click handler (capture cellId in closure)
 			local capturedCellId = cellId
@@ -386,8 +503,9 @@ function GameUI.create()
 	resourcesTitle.TextXAlignment = Enum.TextXAlignment.Left
 	resourcesTitle.Parent = rightPanel
 	
-	-- Resources list (will be populated)
+	-- Resources list
 	local resourcesList = Instance.new("ScrollingFrame")
+	resourcesList.Name = "ResourcesList"
 	resourcesList.Size = UDim2.new(1, -20, 1, -70)
 	resourcesList.Position = UDim2.new(0, 10, 0, 60)
 	resourcesList.BackgroundTransparency = 1
@@ -395,6 +513,21 @@ function GameUI.create()
 	resourcesList.ScrollBarThickness = 8
 	resourcesList.CanvasSize = UDim2.new(0, 0, 0, 0)
 	resourcesList.Parent = rightPanel
+	
+	-- Store reference
+	GameUI.resourcesList = resourcesList
+	
+	-- Layout for resources
+	local resourcesLayout = Instance.new("UIListLayout")
+	resourcesLayout.Padding = UDim.new(0, 5)
+	resourcesLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	resourcesLayout.Parent = resourcesList
+	
+	local function updateResourcesCanvasSize()
+		resourcesList.CanvasSize = UDim2.new(0, 0, 0, resourcesLayout.AbsoluteContentSize.Y + 10)
+	end
+	
+	resourcesLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateResourcesCanvasSize)
 	
 	-- Store reference
 	gameGui:SetAttribute("CenterPanel", true)
@@ -433,8 +566,9 @@ function GameUI.loadGridBuildings()
 			
 			if building then
 				print("✓ Loading building on cell", cellId)
+				-- Apply building color
 				cell.BackgroundColor3 = building.color
-				cell.BorderColor3 = Color3.fromRGB(building.color.R * 255 + 20, building.color.G * 255 + 20, building.color.B * 255 + 20)
+				cell.BorderColor3 = Color3.fromRGB(math.max(0, building.color.R * 255 - 30), math.max(0, building.color.G * 255 - 30), math.max(0, building.color.B * 255 - 30))
 				
 				-- Remove old icon if exists
 				local oldIcon = cell:FindFirstChild("BuildingIcon")
@@ -491,6 +625,38 @@ function GameUI.loadSave(saveData: any)
 	
 	-- Load grid buildings from save
 	GameUI.loadGridBuildings()
+	
+	-- Load and display resources
+	GameUI.updateResourcesDisplay()
+	
+	-- Connect production manager to resource updates (immediate UI update)
+	ProductionManager.setResourceUpdateCallback(function(resourceId, amount)
+		GameUI.addResource(resourceId, amount)
+	end)
+	
+	-- Connect production manager to save callback (periodic aggregate save)
+	ProductionManager.setSaveCallback(function(aggregateResources)
+		-- Add aggregated resources to save WITHOUT triggering individual saves
+		for resourceId, amount in pairs(aggregateResources) do
+			if not GameUI.currentSave.Resources then
+				GameUI.currentSave.Resources = {}
+			end
+			GameUI.currentSave.Resources[resourceId] = (GameUI.currentSave.Resources[resourceId] or 0) + amount
+		end
+		-- Update display
+		GameUI.updateResourcesDisplay()
+		-- Save once at the end
+		GameUI.saveToDatastore()
+	end)
+	
+	-- Start production system
+	if not ProductionManager.isRunning then
+		ProductionManager.start()
+	end
+	
+	-- Start production for loaded buildings (after a short delay to ensure UI is ready)
+	task.wait(0.5)
+	BuildingProduction.startLoadedBuildings(GameUI.currentSave)
 end
 
 -- Show buildings modal
@@ -637,9 +803,9 @@ function GameUI.placeBuilding(cellId: number, buildingId: string, building: any)
 	local cell = GameUI.centerPanel and GameUI.centerPanel:FindFirstChild("Cell_" .. cellId)
 	
 	if cell then
-		-- Show building in cell
-		cell.BackgroundColor3 = building.color
-		cell.BorderColor3 = Color3.fromRGB(building.color.R * 255 + 20, building.color.G * 255 + 20, building.color.B * 255 + 20)
+				-- Show building in cell
+				cell.BackgroundColor3 = building.color
+				cell.BorderColor3 = Color3.fromRGB(math.max(0, building.color.R * 255 - 30), math.max(0, building.color.G * 255 - 30), math.max(0, building.color.B * 255 - 30))
 		
 		-- Remove old icon if exists
 		local oldIcon = cell:FindFirstChild("BuildingIcon")
@@ -661,12 +827,11 @@ function GameUI.placeBuilding(cellId: number, buildingId: string, building: any)
 		-- Cell stays active to allow clicking for building info
 	end
 	
-	-- Fire to server to save
-	local RemoteEvents = game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents")
-	local UpdateSaveEvent = RemoteEvents:FindFirstChild("UpdateSave")
-	if UpdateSaveEvent then
-		UpdateSaveEvent:FireServer(GameUI.currentSave)
-	end
+	-- Start building production (sends messages to ProductionManager)
+	BuildingProduction.startProduction(cellId, {buildingId = buildingId})
+	
+	-- Save immediately when placing building
+	GameUI.saveToDatastore()
 	
 	print("Placed building:", building.name, "on cell:", cellId)
 end
@@ -791,6 +956,108 @@ function GameUI.showBuildingInfoModal(cellId: number)
 		timeLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
 		timeLabel.TextXAlignment = Enum.TextXAlignment.Left
 		timeLabel.Parent = GameUI.buildingInfoContent
+	end
+end
+
+-- Update resources display in right panel
+function GameUI.updateResourcesDisplay()
+	if not GameUI.resourcesList or not GameUI.currentSave then return end
+	
+	-- Clear existing resource labels
+	for _, child in pairs(GameUI.resourcesList:GetChildren()) do
+		if child:IsA("TextLabel") then
+			child:Destroy()
+		end
+	end
+	
+	-- Display resources
+	local layoutOrder = 1
+	for resourceId, amount in pairs(GameUI.currentSave.Resources or {}) do
+		if amount > 0 then -- Only show resources with amount > 0
+			local resourceLabel = Instance.new("TextLabel")
+			resourceLabel.Size = UDim2.new(1, -10, 0, 40)
+			resourceLabel.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+			resourceLabel.BorderSizePixel = 1
+			resourceLabel.BorderColor3 = Color3.fromRGB(60, 60, 70)
+			resourceLabel.Text = resourceId .. ": " .. amount
+			resourceLabel.Font = Enum.Font.Gotham
+			resourceLabel.TextSize = 16
+			resourceLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+			resourceLabel.LayoutOrder = layoutOrder
+			layoutOrder = layoutOrder + 1
+			resourceLabel.Parent = GameUI.resourcesList
+		end
+	end
+	
+	-- Show empty message if no resources
+	if layoutOrder == 1 then
+		local emptyLabel = Instance.new("TextLabel")
+		emptyLabel.Size = UDim2.new(1, -10, 0, 40)
+		emptyLabel.BackgroundTransparency = 1
+		emptyLabel.Text = "No resources yet"
+		emptyLabel.Font = Enum.Font.Gotham
+		emptyLabel.TextSize = 14
+		emptyLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+		emptyLabel.LayoutOrder = 1
+		emptyLabel.Parent = GameUI.resourcesList
+	end
+end
+
+-- Add resource (client-side only)
+function GameUI.addResource(resourceId: string, amount: number)
+	if not GameUI.currentSave then return end
+	
+	if not GameUI.currentSave.Resources then
+		GameUI.currentSave.Resources = {}
+	end
+	
+	GameUI.currentSave.Resources[resourceId] = (GameUI.currentSave.Resources[resourceId] or 0) + amount
+	
+	-- Update display
+	GameUI.updateResourcesDisplay()
+end
+
+-- Get resource amount
+function GameUI.getResource(resourceId: string): number
+	if not GameUI.currentSave or not GameUI.currentSave.Resources then
+		return 0
+	end
+	return GameUI.currentSave.Resources[resourceId] or 0
+end
+
+-- Auto-save to datastore periodically
+function GameUI.startAutoSave()
+	-- Cancel existing auto-save if running
+	if GameUI.autoSaveTask then
+		task.cancel(GameUI.autoSaveTask)
+	end
+	
+	GameUI.autoSaveTask = task.spawn(function()
+		while true do
+			task.wait(GameUI.autoSaveInterval)
+			
+			if GameUI.currentSave then
+				-- Save to datastore
+				local RemoteEvents = game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents")
+				local UpdateSaveEvent = RemoteEvents:FindFirstChild("UpdateSave")
+				if UpdateSaveEvent then
+					UpdateSaveEvent:FireServer(GameUI.currentSave)
+					print("Auto-saved game data")
+				end
+			end
+		end
+	end)
+end
+
+-- Manual save (call when important changes occur)
+function GameUI.saveToDatastore()
+	if not GameUI.currentSave then return end
+	
+	local RemoteEvents = game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents")
+	local UpdateSaveEvent = RemoteEvents:FindFirstChild("UpdateSave")
+	if UpdateSaveEvent then
+		UpdateSaveEvent:FireServer(GameUI.currentSave)
+		print("Manually saved game data")
 	end
 end
 

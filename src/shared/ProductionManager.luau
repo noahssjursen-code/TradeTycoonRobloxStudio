@@ -1,71 +1,93 @@
--- ProductionManager: Handles resource production from buildings
+-- ProductionManager: Centralized resource aggregation service
+-- Buildings send production messages: {resource: "iron_ore", amount: 1}
+-- Service aggregates all production and periodically saves to datastore
 
 local ProductionManager = {}
 
-ProductionManager.productionCycle = 10 -- seconds per cycle
-ProductionManager.activeBuildings = {} -- {[cellId] = {buildingType, productionData}}
+ProductionManager.isRunning = false
+ProductionManager.aggregateResources = {} -- {[resourceId] = totalAmount}
+ProductionManager.autoSaveTask = nil
+ProductionManager.autoSaveInterval = 30 -- Save every 30 seconds
 
--- Start production for a building
-function ProductionManager.startProduction(cellId: number, buildingId: string)
-	-- Get building definition
-	local BuildingManager = require(game.ReplicatedStorage.Shared.BuildingManager)
-	local building = BuildingManager.getBuilding(buildingId)
-	
-	if not building then return end
-	
-	-- Add to active buildings
-	ProductionManager.activeBuildings[cellId] = {
-		buildingId = buildingId,
-		lastProduction = os.time(),
-		cycleStart = os.time(),
-	}
-end
+-- Callback for when resources need to be saved
+ProductionManager.onResourcesReadyToSave = nil
 
--- Stop production for a building
-function ProductionManager.stopProduction(cellId: number)
-	ProductionManager.activeBuildings[cellId] = nil
-end
-
--- Process production cycle (called periodically)
-function ProductionManager.processCycle()
-	local currentTime = os.time()
+-- Start the service
+function ProductionManager.start()
+	if ProductionManager.isRunning then
+		warn("ProductionManager is already running!")
+		return
+	end
 	
-	for cellId, productionData in pairs(ProductionManager.activeBuildings) do
-		local timeSinceLastProduction = currentTime - productionData.lastProduction
-		
-		if timeSinceLastProduction >= ProductionManager.productionCycle then
-			-- Produce resources
-			ProductionManager.produceResources(cellId, productionData.buildingId)
-			
-			-- Update last production time
-			productionData.lastProduction = currentTime
+	ProductionManager.isRunning = true
+	
+	-- Start auto-save task
+	ProductionManager.autoSaveTask = task.spawn(function()
+		while ProductionManager.isRunning do
+			task.wait(ProductionManager.autoSaveInterval)
+			ProductionManager.saveResources()
 		end
+	end)
+	
+	print("ProductionManager started - aggregating and saving every", ProductionManager.autoSaveInterval, "seconds")
+end
+
+-- Stop the service
+function ProductionManager.stop()
+	ProductionManager.isRunning = false
+	if ProductionManager.autoSaveTask then
+		task.cancel(ProductionManager.autoSaveTask)
+	end
+	
+	-- Save before stopping
+	ProductionManager.saveResources()
+	
+	print("ProductionManager stopped")
+end
+
+-- Receive production from a building (called by buildings)
+function ProductionManager.receiveProduction(resourceId: string, amount: number)
+	if not ProductionManager.isRunning then return end
+	
+	-- Add to aggregate
+	ProductionManager.aggregateResources[resourceId] = (ProductionManager.aggregateResources[resourceId] or 0) + amount
+	
+	print("Received production:", resourceId, "+", amount, "Total:", ProductionManager.aggregateResources[resourceId])
+	
+	-- Call UI callback immediately for display
+	if ProductionManager.onResourceUpdate then
+		ProductionManager.onResourceUpdate(resourceId, amount)
 	end
 end
 
--- Produce resources from a building
-function ProductionManager.produceResources(cellId: number, buildingId: string)
-	local BuildingManager = require(game.ReplicatedStorage.Shared.BuildingManager)
-	local building = BuildingManager.getBuilding(buildingId)
+-- Save aggregated resources periodically
+function ProductionManager.saveResources()
+	local resourcesToSave = {}
+	for k, v in pairs(ProductionManager.aggregateResources) do
+		resourcesToSave[k] = v
+	end
 	
-	if not building or not building.produces then return end
+	-- Clear aggregate
+	ProductionManager.aggregateResources = {}
 	
-	-- Fire event to update client resources
-	local RemoteEvents = game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents")
-	local UpdateResourcesEvent = RemoteEvents:FindFirstChild("UpdateResources")
-	
-	if UpdateResourcesEvent then
-		UpdateResourcesEvent:FireAllClients(cellId, building.produces)
+	-- Call save callback
+	if ProductionManager.onResourcesReadyToSave and resourcesToSave then
+		ProductionManager.onResourcesReadyToSave(resourcesToSave)
 	end
 end
 
--- Run production cycles
-task.spawn(function()
-	while true do
-		task.wait(1) -- Check every second
-		ProductionManager.processCycle()
-	end
-end)
+-- Get current aggregated resources
+function ProductionManager.getResources()
+	return ProductionManager.aggregateResources
+end
+
+-- Set callbacks
+function ProductionManager.setResourceUpdateCallback(callback: (string, number) -> ())
+	ProductionManager.onResourceUpdate = callback
+end
+
+function ProductionManager.setSaveCallback(callback: (any) -> ())
+	ProductionManager.onResourcesReadyToSave = callback
+end
 
 return ProductionManager
-

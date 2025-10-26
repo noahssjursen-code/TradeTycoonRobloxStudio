@@ -36,7 +36,8 @@ BuildingManager.buildings = {
 			type = BuildingManager.Types.RawMaterialProducer,
 			category = "Mining",
 			price = 500,
-			produces = { coal = 10 },
+			produces = { coal = 1 },
+			cycleTime = 10,
 			icon = "⛏️",
 			color = Color3.fromRGB(40, 40, 40),
 			size = { width = 1, height = 1 },
@@ -58,7 +59,8 @@ BuildingManager.buildings = {
 			type = BuildingManager.Types.RawMaterialProducer,
 			category = "Mining",
 			price = 500,
-			produces = { iron = 10 },
+			produces = { iron = 1 }, -- Produces 1 iron per cycle
+			cycleTime = 10, -- 10 seconds per cycle
 			icon = "⛏️",
 			color = Color3.fromRGB(180, 100, 80),
 			size = { width = 1, height = 1 },
